@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Layers, Plus, Search, ShieldAlert, Trash2, TriangleAlert } from "lucide-react";
+import { ExternalLink, Layers, Plus, Search, ShieldAlert, Trash2, TriangleAlert } from "lucide-react";
+import { PlatformLinks } from "@/components/platform-links";
+import { sellingLinks, sourcingLinks } from "@/lib/marketplace-urls";
 
 type Row = {
   market: string;
@@ -254,6 +256,12 @@ export function SpreadFinder({
           </label>
         </div>
 
+        {nameZh.trim() ? (
+          <div className="mt-4 rounded-xl border border-slate-700 bg-[#0a1226] p-3">
+            <PlatformLinks title="🇨🇳 去采购端查货源价" links={sourcingLinks(nameZh)} compact />
+          </div>
+        ) : null}
+
         <p className="mt-5 flex items-center gap-2 text-sm font-extrabold text-amber-200">
           各国在售价
           <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-normal text-slate-400">
@@ -291,6 +299,24 @@ export function SpreadFinder({
             </div>
           ))}
         </div>
+
+        {/* 让用户能直接跳去对应站点查这个价，而不用自己拼域名 */}
+        {nameZh.trim() ? (
+          <div className="mt-3 space-y-2">
+            {quotes
+              .filter((q) => q.market)
+              .map((q, i) => {
+                const links = sellingLinks(q.market, nameZh);
+                if (links.length === 0) return null;
+                return (
+                  <div key={`${q.market}-${i}`} className="flex flex-wrap items-center gap-2">
+                    <span className="w-8 shrink-0 text-[11px] text-slate-500">{q.market}</span>
+                    <PlatformLinks links={links} compact />
+                  </div>
+                );
+              })}
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={() => setQuotes([...quotes, { market: "US", sellPrice: "" }])}
@@ -388,6 +414,18 @@ export function SpreadFinder({
                       {r.grade}
                     </span>
                     <p className="mt-1 text-[11px] text-slate-500">{r.source}</p>
+                    {/* 抓取模式下 url 指向真正被抓取的那个商品，与本行价格严格对应 */}
+                    {r.url ? (
+                      <a
+                        href={r.url}
+                        target="_blank"
+                        rel="noopener noreferrer nofollow"
+                        className="mt-1 inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300"
+                        title="本行价格即抓取自该商品页"
+                      >
+                        打开该商品 <ExternalLink size={10} />
+                      </a>
+                    ) : null}
                   </div>
                 </div>
               ))}

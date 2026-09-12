@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, Flame, Package, Search, Ship, TrendingUp, X } from "lucide-react";
+import { PlatformLinks } from "@/components/platform-links";
+import { sellingLinks, sourcingLinks } from "@/lib/marketplace-urls";
 import { gradeOf } from "@/lib/profit";
 import type { Opportunity, ShippingMethod } from "@/lib/types";
 import { compact, pct } from "@/lib/format";
@@ -243,6 +245,10 @@ export function OpportunityBoard({
                   <span className="text-slate-200">¥{sellCny.toFixed(0)}</span>{" "}
                   <span className="text-rose-300">+{diffRate.toFixed(0)}%</span>
                 </p>
+                {/* 点链接不应触发行的详情抽屉 */}
+                <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                  <PlatformLinks compact links={sourcingLinks(o.nameZh)} />
+                </div>
               </div>
 
               <div className="col-span-2 mt-2 md:mt-0">
@@ -253,6 +259,9 @@ export function OpportunityBoard({
                 <p className="num text-xs text-sky-300">
                   {o.currency} {o.sellPriceLocal}
                 </p>
+                <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                  <PlatformLinks compact links={sellingLinks(o.marketCode, o.nameEn || o.nameZh)} />
+                </div>
               </div>
 
               <div className="col-span-2 mt-2 md:mt-0">
@@ -458,6 +467,18 @@ function DetailDrawer({
             })}
           </b>
           。这是模型推算，不含备货资金占用与滞销风险。
+        </div>
+
+        <div className="mt-4 space-y-3 rounded-xl border border-slate-700 bg-[#0e1836] p-3">
+          <PlatformLinks title="🇨🇳 去采购端核价" links={sourcingLinks(o.nameZh)} />
+          <PlatformLinks
+            title={`${o.flag} 去 ${o.marketName} 销售端比价`}
+            links={sellingLinks(o.marketCode, o.nameEn || o.nameZh)}
+          />
+          <p className="text-[11px] leading-5 text-slate-500">
+            以上为按品名生成的搜索链接，落地页是多个商品。本页数字来自模型基准值，
+            不是这些链接里某个具体商品的实时价——请以打开后的实际报价复核。
+          </p>
         </div>
 
         <Link
