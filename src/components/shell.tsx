@@ -105,7 +105,15 @@ export function Header({ marketCount }: { marketCount?: number }) {
   );
 }
 
-export function Footer({ durable = true }: { durable?: boolean }) {
+export function Footer({
+  durable = true,
+  fxSource,
+  cliff,
+}: {
+  durable?: boolean;
+  fxSource?: string;
+  cliff?: { title: string; days: number } | null;
+}) {
   return (
     <footer className="mt-16 border-t border-slate-800/80">
       {durable ? null : (
@@ -115,8 +123,17 @@ export function Footer({ durable = true }: { durable?: boolean }) {
           </p>
         </div>
       )}
+      {cliff && cliff.days >= 0 ? (
+        <div className="border-b border-slate-800/80 bg-rose-400/10">
+          <p className="mx-auto max-w-7xl px-4 py-2.5 text-xs text-rose-200">
+            政策提醒：{cliff.title}，还有 {cliff.days} 天。到期后税负会跳变，按现税率做的备货测算将失效。
+          </p>
+        </div>
+      ) : null}
       <p className="mx-auto max-w-7xl px-4 py-6 text-xs leading-6 text-slate-500">
-        贸差眼 TradeLens · 税率与运价为可校准的模型基准值，非实时行情 · 正式决策前请复核报关行与承运商报价及认证要求
+        贸差眼 TradeLens · 汇率来源：{fxSource ?? "种子基准值"} · 关税含 MFN 基础税率 + 301 清单 + 现行贸易救济加征
+        <br />
+        运价与海外售价仍为可校准的模型基准值，非实时行情 · 正式决策前请复核报关行与承运商报价及认证要求
         <br />
         公式：净利 = 售价 − 采购 − 运费 − 关税 − VAT − 平台费 − 广告 − 退货 − 杂费
       </p>

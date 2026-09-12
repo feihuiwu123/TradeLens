@@ -9,7 +9,9 @@ import type {
   ShippingRate,
 } from "@/db/schema";
 import { calculateProfit, methodLabel, opportunityScore, pickDefaultMethod, rankOpportunities } from "@/lib/profit";
+import { additionalDutyRate } from "@/lib/trade-remedies";
 import type { CalcInput, Opportunity, ShippingMethod } from "@/lib/types";
+import { getLiveFx } from "@/server/providers/fx-service";
 import { getStore } from "@/server/store";
 import type { Catalog } from "@/server/store/types";
 
@@ -18,9 +20,22 @@ export type { Catalog } from "@/server/store/types";
 /**
  * 用 React cache 按请求去重：布局与页面在同一次渲染里都要读目录，
  * 不去重的话每个页面会把 8 张参考表各查两遍。
+ *
+ * 汇率会用 ECB 实测值覆盖种子基准值；ECB 不发布的币种（如盯住美元的 AED）
+ * 以及取数失败时，保留原有基准值。
  */
 export const loadCatalog = cache(async (): Promise<Catalog> => {
-  return getStore().loadCatalog();
+  const catalog = await getStore().loadCatalog();
+  const live = await getLiveFx(catalog.fx.map((f) => f.currency));
+  if (!live) return catalog;
+
+  return {
+    ...catalog,
+    fx: catalog.fx.map((row) => {
+      const rate = live.value[row.currency];
+      return rate && rate > 0 ? { ...row, cnyPerUnit: rate } : row;
+    }),
+  };
 });
 
 export function fxMap(fx: FxRate[]) {
@@ -65,10 +80,19 @@ export function buildCalcInput(opts: {
   adsRate?: number;
   returnRate?: number;
   vatRecoverable?: boolean;
+  /** 按哪一天的政策计税，默认今天。回溯历史测算时传入当时日期。 */
+  asOf?: Date;
 }): CalcInput {
   const cnyUsd = cnyPerUsd(opts.fx);
   const cnyLocal = fxMap(opts.fx).get(opts.market.currency) ?? cnyUsd;
-  const dutyRate = (opts.tariff?.mfnDuty ?? opts.market.vatRate * 0) + (opts.tariff?.extraDuty ?? 0);
+
+  // 关税三层叠加：MFN 基础税率 + HS 对应的 301 清单税率 + 按原产地生效的贸易救济措施。
+  // 前两层来自税则库，第三层来自 trade-remedies（官方税则接口里查不到）。
+  const mfn = opts.tariff?.mfnDuty ?? 0;
+  const listExtra = opts.tariff?.extraDuty ?? 0;
+  const remedy = additionalDutyRate(opts.market.code, opts.asOf ?? new Date());
+  const dutyRate = mfn + listExtra + remedy.rate;
+
   const vatRate = opts.tariff?.vatRate ?? opts.market.vatRate;
   return {
     sourcePriceCny: opts.product.sourcePriceCny,
