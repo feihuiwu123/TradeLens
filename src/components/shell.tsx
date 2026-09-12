@@ -13,6 +13,7 @@ import {
   Menu,
   Package,
   Radar,
+  Search,
   Ship,
   Stamp,
   X,
@@ -21,6 +22,7 @@ import {
 
 const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/", label: "雷达", icon: Radar },
+  { href: "/discover", label: "价差发现", icon: Search },
   { href: "/opportunities", label: "机会", icon: Compass },
   { href: "/products", label: "货源", icon: Package },
   { href: "/calculator", label: "全成本", icon: Calculator },
