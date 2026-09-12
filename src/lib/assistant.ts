@@ -71,6 +71,58 @@ const EXISTING_TOOLS = `市面上已有工具，但没有一个同时覆盖「�
 
 贸差眼 TradeLens 要补的缺口：把差价、需求、海关、运费、平台费做成同一套引擎，并给 Hermes 等助手提供 API。`;
 
+/** 两个字符串的最长公共子串长度。串都很短（问题 < 50 字，品名 < 20 字），DP 足够。 */
+function longestCommonSubstring(a: string, b: string) {
+  if (!a || !b) return 0;
+  let best = 0;
+  let prev = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = new Array<number>(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        cur[j] = prev[j - 1] + 1;
+        if (cur[j] > best) best = cur[j];
+      }
+    }
+    prev = cur;
+  }
+  return best;
+}
+
+/**
+ * 按品名模糊匹配商品。
+ *
+ * 中文没有词边界，用户不会输入完整品名——问「耳机」要能命中「私模半入耳蓝牙耳机」。
+ * 因此取提问与品名的最长公共子串，≥ MIN_NAME_MATCH 字即算命中，并按匹配长度取最优，
+ * 让「蓝牙耳机」优先于只共享「耳机」的其它商品。
+ * SKU 与英文名仍走精确包含匹配。
+ */
+const MIN_NAME_MATCH = 2;
+
+export function matchProduct<T extends { nameZh: string; nameEn: string; sku: string }>(
+  question: string,
+  products: T[],
+): T | undefined {
+  const q = question.trim();
+  const lower = q.toLowerCase();
+
+  const exact = products.find(
+    (p) => lower.includes(p.sku.toLowerCase()) || (p.nameEn && lower.includes(p.nameEn.toLowerCase())),
+  );
+  if (exact) return exact;
+
+  let best: T | undefined;
+  let bestLen = MIN_NAME_MATCH - 1;
+  for (const p of products) {
+    const len = longestCommonSubstring(q, p.nameZh);
+    if (len > bestLen) {
+      bestLen = len;
+      best = p;
+    }
+  }
+  return best;
+}
+
 function topN(items: Opportunity[], n = 5) {
   return items.slice(0, n);
 }
@@ -95,9 +147,7 @@ export async function answerAssistant(question: string, catalog: Catalog) {
   const marketHit = catalog.markets.find(
     (m) => q.includes(m.nameZh) || lower.includes(m.code.toLowerCase()) || lower.includes(m.nameEn.toLowerCase()),
   );
-  const productHit = catalog.products.find(
-    (p) => q.includes(p.nameZh) || lower.includes(p.sku.toLowerCase()) || lower.includes(p.nameEn.toLowerCase()),
-  );
+  const productHit = matchProduct(q, catalog.products);
   const categoryHit = catalog.categories.find(
     (c) => q.includes(c.nameZh) || lower.includes(c.slug) || lower.includes(c.nameEn.toLowerCase()),
   );
@@ -152,7 +202,27 @@ export async function answerAssistant(question: string, catalog: Catalog) {
 
   if (productHit) {
     const related = opps.filter((o) => o.productId === productHit.id);
-    return `产品档案：${productHit.nameZh}（${productHit.sku}）\n货源 ${productHit.supplierPlatform} ¥${productHit.sourcePriceCny}，MOQ ${productHit.moq}，${productHit.weightKg} kg，HS ${productHit.hsCode}，认证 ${productHit.certifications}，IP 风险 ${productHit.ipRisk}。\n${productHit.description}\n\n${replyForOpps("该货源在各市场的全成本结果：", related)}`;
+    const profile = `产品档案：${productHit.nameZh}（${productHit.sku}）\n货源 ${productHit.supplierPlatform} ¥${productHit.sourcePriceCny}，MOQ ${productHit.moq}，${productHit.weightKg} kg，HS ${productHit.hsCode}，认证 ${productHit.certifications}，IP 风险 ${productHit.ipRisk}。\n${productHit.description}`;
+
+    // 「耳机卖美国怎么样」这类问法同时指定了品和国：先正面回答问到的那个市场，
+    // 再附上其它市场做横向对比，并点出纯利最高的主攻国。
+    if (marketHit) {
+      const asked = related.find((o) => o.marketCode === marketHit.code);
+      const others = related.filter((o) => o.marketCode !== marketHit.code);
+      const best = [...related].sort((a, b) => b.result.netProfitUsd - a.result.netProfitUsd)[0];
+      const verdict = asked
+        ? `${marketHit.flag} ${marketHit.nameZh} 的结论：${asked.result.verdictLabel}\n\n${formatOpp(asked)}`
+        : `${marketHit.flag} ${marketHit.nameZh}：该货源暂无此市场的在售参考价，无法给出可信测算。`;
+      const advice =
+        best && best.marketCode !== marketHit.code
+          ? `\n\n主攻建议：同款在 ${best.flag} ${best.marketName} 的单件净利最高（${money(best.result.netProfitUsd)}，利润率 ${pct(best.result.marginPct)}），高于${marketHit.nameZh}。`
+          : best
+            ? `\n\n主攻建议：${marketHit.nameZh}就是这款目前纯利最高的市场。`
+            : "";
+      return `${profile}\n\n${verdict}${advice}\n\n${replyForOpps("其它市场横向对比：", others)}`;
+    }
+
+    return `${profile}\n\n${replyForOpps("该货源在各市场的全成本结果：", related)}`;
   }
 
   if (marketHit) {
