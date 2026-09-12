@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import type { LucideIcon } from "lucide-react";
 import type { Opportunity } from "@/lib/types";
 import { compact, money, pct } from "@/lib/format";
 
@@ -32,10 +33,37 @@ export function Verdict({ verdict }: { verdict: "go" | "thin" | "no" }) {
 
 export function SectionTitle({ kicker, title, desc }: { kicker: string; title: string; desc?: string }) {
   return (
-    <div className="mb-8 max-w-3xl">
-      <p className="font-display text-xs tracking-[0.28em] text-[var(--gold)]">{kicker}</p>
-      <h2 className="font-serif mt-2 text-3xl md:text-4xl">{title}</h2>
-      {desc ? <p className="mt-3 text-[var(--muted)]">{desc}</p> : null}
+    <div className="mb-6 max-w-3xl">
+      <p className="text-[10px] font-bold tracking-[0.28em] text-amber-300">{kicker}</p>
+      <h2 className="mt-2 text-2xl font-black md:text-3xl">{title}</h2>
+      {desc ? <p className="mt-2 text-sm leading-6 text-slate-400">{desc}</p> : null}
+    </div>
+  );
+}
+
+/** 页头：图标方块 + 中文标题 + 英文代号 + 一句话说明，对齐各页视觉节奏。 */
+export function PageHead({
+  icon: Icon,
+  zh,
+  en,
+  desc,
+}: {
+  icon: LucideIcon;
+  zh: string;
+  en: string;
+  desc: string;
+}) {
+  return (
+    <div className="mb-4 flex items-center gap-2">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-800">
+        <Icon size={17} className="text-amber-300" />
+      </span>
+      <div>
+        <p className="text-sm font-extrabold text-slate-100">
+          {zh} <span className="ml-1 text-[10px] font-normal tracking-widest text-slate-500">{en}</span>
+        </p>
+        <p className="text-xs text-slate-500">{desc}</p>
+      </div>
     </div>
   );
 }

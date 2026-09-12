@@ -1,3 +1,4 @@
+import { cache } from "react";
 import type {
   CustomsTariff,
   FxRate,
@@ -14,9 +15,13 @@ import type { Catalog } from "@/server/store/types";
 
 export type { Catalog } from "@/server/store/types";
 
-export async function loadCatalog(): Promise<Catalog> {
+/**
+ * 用 React cache 按请求去重：布局与页面在同一次渲染里都要读目录，
+ * 不去重的话每个页面会把 8 张参考表各查两遍。
+ */
+export const loadCatalog = cache(async (): Promise<Catalog> => {
   return getStore().loadCatalog();
-}
+});
 
 export function fxMap(fx: FxRate[]) {
   return new Map(fx.map((row) => [row.currency, row.cnyPerUnit]));
@@ -130,7 +135,10 @@ export function buildOpportunities(catalog: Catalog, methodPref?: ShippingMethod
       categoryName: category?.nameZh ?? "",
       hsCode: product.hsCode,
       sourcePriceCny: product.sourcePriceCny,
+      supplierPlatform: product.supplierPlatform,
       weightKg: product.weightKg,
+      dutyRate: input.dutyRate,
+      vatRate: input.vatRate,
       marketId: market.id,
       marketCode: market.code,
       marketName: market.nameZh,

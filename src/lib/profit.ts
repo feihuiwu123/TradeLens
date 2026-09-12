@@ -166,6 +166,21 @@ export function methodLabel(method: ShippingMethod) {
   }
 }
 
+export type Grade = { grade: "S" | "A" | "B" | "C"; label: string; color: string };
+
+/**
+ * 把综合分映射成 S/A/B/C 评级。
+ *
+ * 阈值针对的是本仓 opportunityScore 的 0~100 分布（实测集中在 30~85），
+ * 与 PRD 5.5 节里那套基于另一公式的分段不是同一标尺，不要互相套用。
+ */
+export function gradeOf(score: number): Grade {
+  if (score >= 70) return { grade: "S", label: "S · 强推", color: "#34d399" };
+  if (score >= 55) return { grade: "A", label: "A · 推荐", color: "#38bdf8" };
+  if (score >= 40) return { grade: "B", label: "B · 观察", color: "#fbbf24" };
+  return { grade: "C", label: "C · 谨慎", color: "#fb7185" };
+}
+
 export function rankOpportunities(items: Opportunity[]) {
   return [...items].sort((a, b) => b.score - a.score || b.result.marginPct - a.result.marginPct);
 }

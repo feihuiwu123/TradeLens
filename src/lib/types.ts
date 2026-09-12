@@ -73,7 +73,12 @@ export type Opportunity = {
   categoryName: string;
   hsCode: string;
   sourcePriceCny: number;
+  supplierPlatform: string;
   weightKg: number;
+  /** 实际适用的关税率（MFN + 附加），0~1 */
+  dutyRate: number;
+  /** 实际适用的增值税率，0~1 */
+  vatRate: number;
   marketId: number;
   marketCode: string;
   marketName: string;

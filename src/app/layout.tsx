@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Footer, Header } from "@/components/shell";
+import { loadCatalog } from "@/lib/catalog";
 import { getStore } from "@/server/store";
 import "./globals.css";
 
@@ -9,15 +10,15 @@ export const metadata: Metadata = {
   description: "把 1688 货源、海外需求、关税、运费、平台费算进同一张利润表，并开放给 Hermes 等个人助手调用。",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const catalog = await loadCatalog();
+
   return (
     <html lang="zh-CN">
       <body className="antialiased">
-        <div className="relative z-10">
-          <Header />
-          {children}
-          <Footer durable={getStore().durable} />
-        </div>
+        <Header marketCount={catalog.markets.length} />
+        {children}
+        <Footer durable={getStore().durable} />
       </body>
     </html>
   );
