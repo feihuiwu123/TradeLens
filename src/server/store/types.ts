@@ -7,6 +7,7 @@ import type {
   PlatformFee,
   Product,
   ShippingRate,
+  Subcategory,
   WatchItem,
 } from "@/db/schema";
 
@@ -14,6 +15,7 @@ import type {
 export type Catalog = {
   markets: Market[];
   categories: Category[];
+  subcategories: Subcategory[];
   products: Product[];
   listings: MarketListing[];
   shipping: ShippingRate[];

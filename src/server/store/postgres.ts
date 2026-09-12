@@ -11,6 +11,7 @@ import {
   products,
   savedCalcs,
   shippingRates,
+  subcategories,
   watchlist,
   type WatchItem,
 } from "@/db/schema";
@@ -22,6 +23,7 @@ const SEEDED_TABLES = [
   "markets",
   "fx_rates",
   "categories",
+  "subcategories",
   "products",
   "market_listings",
   "shipping_rates",
@@ -56,6 +58,7 @@ class PostgresStore implements TradeStore {
       await tx.insert(markets).values(seed.markets);
       await tx.insert(fxRates).values(seed.fx);
       await tx.insert(categories).values(seed.categories);
+      await tx.insert(subcategories).values(seed.subcategories);
       await tx.insert(products).values(seed.products);
       await tx.insert(marketListings).values(seed.listings);
       await tx.insert(shippingRates).values(seed.shipping);
@@ -73,10 +76,21 @@ class PostgresStore implements TradeStore {
   async loadCatalog(): Promise<Catalog> {
     await this.ensureSeeded();
     const db = getDb();
-    const [marketRows, categoryRows, productRows, listingRows, shippingRows, tariffRows, feeRows, fxRows] =
+    const [
+      marketRows,
+      categoryRows,
+      subcategoryRows,
+      productRows,
+      listingRows,
+      shippingRows,
+      tariffRows,
+      feeRows,
+      fxRows,
+    ] =
       await Promise.all([
         db.select().from(markets),
         db.select().from(categories),
+        db.select().from(subcategories),
         db.select().from(products),
         db.select().from(marketListings),
         db.select().from(shippingRates),
@@ -87,6 +101,7 @@ class PostgresStore implements TradeStore {
     return {
       markets: marketRows,
       categories: categoryRows,
+      subcategories: subcategoryRows,
       products: productRows,
       listings: listingRows,
       shipping: shippingRows,

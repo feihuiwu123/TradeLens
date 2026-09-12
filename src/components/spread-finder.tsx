@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Search, Trash2, TriangleAlert } from "lucide-react";
+import { Layers, Plus, Search, ShieldAlert, Trash2, TriangleAlert } from "lucide-react";
 
 type Row = {
   market: string;
@@ -47,7 +47,39 @@ const DEFAULT_QUOTES = [
   { market: "AE", sellPrice: "" },
 ];
 
-export function SpreadFinder({ markets }: { markets: { code: string; nameZh: string; flag: string }[] }) {
+export type TaxonomyNode = {
+  slug: string;
+  nameZh: string;
+  subcategories: {
+    slug: string;
+    nameZh: string;
+    hsCode: string;
+    hsVerified: boolean;
+    typicalWeightKg: number;
+    typicalVolumeCbm: number;
+    logisticsFlag: string;
+    complianceLevel: string;
+    requiredCerts: string;
+    note: string;
+  }[];
+};
+
+const FLAG_LABEL: Record<string, string> = {
+  volumetric: "抛货 · 禁走快递",
+  heavy: "重货 · 仅海运",
+  battery: "含电 · 空运受限",
+};
+
+export function SpreadFinder({
+  markets,
+  tree,
+}: {
+  markets: { code: string; nameZh: string; flag: string }[];
+  tree: TaxonomyNode[];
+}) {
+  const [catSlug, setCatSlug] = useState("");
+  const [subSlug, setSubSlug] = useState("");
+  const [certs, setCerts] = useState("");
   const [nameZh, setNameZh] = useState("私模半入耳蓝牙耳机");
   const [sourcePriceCny, setSourcePriceCny] = useState("28.5");
   const [weightKg, setWeightKg] = useState("0.085");
@@ -57,6 +89,31 @@ export function SpreadFinder({ markets }: { markets: { code: string; nameZh: str
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const subs = tree.find((c) => c.slug === catSlug)?.subcategories ?? [];
+  const sub = subs.find((s) => s.slug === subSlug);
+
+  /** block 级且未提供任一所需证书 → 硬拦截，不允许测算 */
+  const requiredCerts = (sub?.requiredCerts ?? "")
+    .split(/[,/;，、]/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const heldCerts = certs.split(/[,，\s]+/).map((c) => c.trim().toLowerCase()).filter(Boolean);
+  const certSatisfied =
+    requiredCerts.length === 0 ||
+    requiredCerts.some((r) => heldCerts.some((h) => r.toLowerCase().includes(h) || h.includes(r.toLowerCase())));
+  const blocked = sub?.complianceLevel === "block" && !certSatisfied;
+
+  /** 选中子类目后预填 HS 与典型重量体积，省掉用户查编码 */
+  function applySub(slug: string) {
+    setSubSlug(slug);
+    const s = subs.find((x) => x.slug === slug);
+    if (!s) return;
+    setHsCode(s.hsCode);
+    setWeightKg(String(s.typicalWeightKg));
+    setVolumeCbm(String(s.typicalVolumeCbm));
+    if (nameZh === "" ) setNameZh(s.nameZh);
+  }
 
   async function run() {
     setBusy(true);
@@ -95,7 +152,82 @@ export function SpreadFinder({ markets }: { markets: { code: string; nameZh: str
 
   return (
     <div className="animate-fadeup">
+      {/* 类目 → 子类目级联 */}
       <div className="rounded-2xl border border-slate-800 bg-[#0c1530]/80 p-4">
+        <p className="flex items-center gap-2 text-sm font-extrabold text-amber-200">
+          <Layers size={15} /> 选类目
+          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-normal text-slate-400">
+            选中后自动带出 HS 编码与典型重量体积
+          </span>
+        </p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <select
+            value={catSlug}
+            onChange={(e) => {
+              setCatSlug(e.target.value);
+              setSubSlug("");
+            }}
+          >
+            <option value="">选择类目…</option>
+            {tree.map((c) => (
+              <option key={c.slug} value={c.slug}>
+                {c.nameZh}（{c.subcategories.length}）
+              </option>
+            ))}
+          </select>
+          <select value={subSlug} onChange={(e) => applySub(e.target.value)} disabled={!catSlug}>
+            <option value="">{catSlug ? "选择子类目…" : "先选类目"}</option>
+            {subs.map((s) => (
+              <option key={s.slug} value={s.slug}>
+                {s.complianceLevel === "block" ? "🔴 " : s.complianceLevel === "warn" ? "⚠️ " : ""}
+                {s.nameZh} · HS {s.hsCode}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {sub ? (
+          <div className="mt-3 space-y-2">
+            <div className="flex flex-wrap gap-2 text-[11px]">
+              <span className="rounded-lg bg-slate-800 px-2 py-1 text-slate-300">HS {sub.hsCode}</span>
+              {!sub.hsVerified ? (
+                <span className="rounded-lg bg-amber-400/15 px-2 py-1 text-amber-200">
+                  编码未经官方税则库校验，仅作起点
+                </span>
+              ) : null}
+              {FLAG_LABEL[sub.logisticsFlag] ? (
+                <span className="rounded-lg bg-orange-400/15 px-2 py-1 text-orange-300">
+                  {FLAG_LABEL[sub.logisticsFlag]}
+                </span>
+              ) : null}
+            </div>
+            {sub.note ? <p className="text-xs leading-6 text-slate-400">{sub.note}</p> : null}
+            {requiredCerts.length > 0 ? (
+              <label className="block text-xs text-slate-400">
+                需要认证：<b className="text-slate-200">{requiredCerts.join(" / ")}</b>
+                <input
+                  value={certs}
+                  onChange={(e) => setCerts(e.target.value)}
+                  placeholder="填入已持有的认证以解锁，如 CPC 或 EN71"
+                  className="mt-1"
+                />
+              </label>
+            ) : null}
+            {blocked ? (
+              <p className="flex items-start gap-2 rounded-xl border border-rose-500/40 bg-rose-400/10 p-3 text-xs leading-6 text-rose-200">
+                <ShieldAlert size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  <b>该品类禁止进入候选池。</b>
+                  属强制认证品类，未取得 {requiredCerts.join(" / ")} 任一证书前不得备货——
+                  无证不是利润薄，是货被扣、店被封、资金被冻结。
+                </span>
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-slate-800 bg-[#0c1530]/80 p-4">
         <p className="flex items-center gap-2 text-sm font-extrabold text-amber-200">
           <Search size={15} /> 中国货源
         </p>
@@ -170,10 +302,10 @@ export function SpreadFinder({ markets }: { markets: { code: string; nameZh: str
         <button
           type="button"
           onClick={run}
-          disabled={busy}
+          disabled={busy || blocked}
           className="mt-4 w-full rounded-xl bg-gradient-to-r from-amber-400 to-orange-400 py-3 text-sm font-extrabold text-slate-900 hover:brightness-110 disabled:opacity-50"
         >
-          {busy ? "正在按全链路成本重算…" : "发现价差 →"}
+          {blocked ? "该品类已被合规拦截" : busy ? "正在按全链路成本重算…" : "发现价差 →"}
         </button>
 
         {error ? (

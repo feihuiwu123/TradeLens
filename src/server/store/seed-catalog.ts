@@ -7,6 +7,7 @@ import type {
   PlatformFee,
   Product,
   ShippingRate,
+  Subcategory,
 } from "@/db/schema";
 import {
   categorySeed,
@@ -19,6 +20,7 @@ import {
   shippingMethodSeed,
   tariffByHs,
 } from "@/lib/seed-data";
+import { subcategorySeed } from "@/lib/taxonomy-seed";
 import type { Catalog } from "@/server/store/types";
 
 /**
@@ -41,6 +43,24 @@ export function buildSeedCatalog(): Catalog {
     if (!category) throw new Error(`种子数据异常：商品 ${p.sku} 引用了不存在的类目 ${p.categorySlug}`);
     const { categorySlug: _drop, ...rest } = p;
     return { ...rest, id: i + 1, categoryId: category.id };
+  });
+
+  const subcategories: Subcategory[] = subcategorySeed.map((s, i) => {
+    const category = categoryBySlug.get(s.categorySlug);
+    if (!category) throw new Error(`种子数据异常：子类目 ${s.slug} 引用了不存在的类目 ${s.categorySlug}`);
+    const { categorySlug: _drop, ...rest } = s;
+    return {
+      ...rest,
+      id: i + 1,
+      categoryId: category.id,
+      altHsCodes: s.altHsCodes ?? "",
+      hsVerified: 0,
+      logisticsFlag: s.logisticsFlag ?? "none",
+      complianceLevel: s.complianceLevel ?? "ok",
+      requiredCerts: s.requiredCerts ?? "",
+      note: s.note ?? "",
+      keywords: s.keywords ?? "",
+    };
   });
 
   const productBySku = new Map(products.map((p) => [p.sku, p]));
@@ -103,5 +123,5 @@ export function buildSeedCatalog(): Catalog {
     }
   }
 
-  return { markets, categories, products, listings, shipping, tariffs, fees, fx };
+  return { markets, categories, subcategories, products, listings, shipping, tariffs, fees, fx };
 }

@@ -43,6 +43,36 @@ export const categories = pgTable("categories", {
   reason: text("reason").notNull(),
 });
 
+/**
+ * 子类目：按需查询（方式2）的实际入口粒度。
+ *
+ * 类目太粗（「3C 数码配件」无法给出 HS 与重量），单品太细（用户还没选定品）。
+ * 子类目是既能定 HS、又能预填重量体积、还能挂合规红线的最小可用单位。
+ */
+export const subcategories = pgTable("subcategories", {
+  id: serial("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  categoryId: integer("category_id").notNull(),
+  nameZh: text("name_zh").notNull(),
+  nameEn: text("name_en").notNull(),
+  /** 代表性 HS 编码（6 位）。8~10 位叶子需用 USITC 现场解析 */
+  hsCode: text("hs_code").notNull(),
+  /** 同一子类目常跨税目，备选编码逗号分隔 */
+  altHsCodes: text("alt_hs_codes").notNull().default(""),
+  /** 是否已用官方税则库校验过。未校验的编码只能当起点，不能当依据 */
+  hsVerified: integer("hs_verified").notNull().default(0),
+  /** 预填测算器用的典型单件重量与体积 */
+  typicalWeightKg: real("typical_weight_kg").notNull(),
+  typicalVolumeCbm: real("typical_volume_cbm").notNull(),
+  /** none | volumetric（抛货，体积重吃掉差价）| heavy（重货仅海运）| battery（带电空运受限） */
+  logisticsFlag: text("logistics_flag").notNull().default("none"),
+  /** ok | warn（需证书但可测算）| block（无证禁止进入候选池） */
+  complianceLevel: text("compliance_level").notNull().default("ok"),
+  requiredCerts: text("required_certs").notNull().default(""),
+  note: text("note").notNull().default(""),
+  keywords: text("keywords").notNull().default(""),
+});
+
 export const products = pgTable("products", {
   id: serial("id").primaryKey(),
   sku: text("sku").notNull().unique(),
@@ -141,6 +171,7 @@ export const assistantMessages = pgTable("assistant_messages", {
 export type Market = typeof markets.$inferSelect;
 export type Product = typeof products.$inferSelect;
 export type Category = typeof categories.$inferSelect;
+export type Subcategory = typeof subcategories.$inferSelect;
 export type MarketListing = typeof marketListings.$inferSelect;
 export type ShippingRate = typeof shippingRates.$inferSelect;
 export type CustomsTariff = typeof customsTariffs.$inferSelect;
