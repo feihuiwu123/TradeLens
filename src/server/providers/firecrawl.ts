@@ -120,12 +120,18 @@ export function createFirecrawlProvider(fetchImpl: typeof fetch = fetch) {
       return { value: listing, source: `${this.name} ${new URL(url).hostname}`, fetchedAt: new Date(), fallback: false };
     },
 
+    /** 抓任意页面的 markdown 正文，交给调用方自行解析 */
+    async scrapeMarkdown(url: string): Promise<string> {
+      const json = await post({ url, formats: ["markdown"], onlyMainContent: true }, 150_000);
+      const md = String((json.data as { markdown?: string })?.markdown ?? "");
+      if (!md) throw new ScrapeRejected("页面无正文");
+      return md;
+    },
+
     /** 抓搜索页，返回候选 ASIN */
     async searchAsins(marketplaceHost: string, keyword: string, limit = 20): Promise<Sourced<string[]>> {
       const url = `https://www.${marketplaceHost}/s?k=${encodeURIComponent(keyword)}`;
-      const json = await post({ url, formats: ["markdown"], onlyMainContent: true }, 150_000);
-      const md = String((json.data as { markdown?: string })?.markdown ?? "");
-      if (!md) throw new ScrapeRejected("搜索页无正文");
+      const md = await this.scrapeMarkdown(url);
       return {
         value: extractAsins(md, limit),
         source: `${this.name} ${marketplaceHost} 搜索`,

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { loadCatalog } from "@/lib/catalog";
 import { AMAZON_HOSTS, discoverSpread, type MarketQuote } from "@/lib/spread";
 import { badRequest, marketCodeSchema, parseJson, route, shippingMethodSchema } from "@/server/http";
+import { priceStats, resolveMarketListings, type PriceStats, type RealListing } from "@/server/providers/amazon-search";
 import { ScrapeRejected, createFirecrawlProvider } from "@/server/providers/firecrawl";
 
 export const dynamic = "force-dynamic";
@@ -48,15 +49,23 @@ const bodySchema = z
     markets: z.array(marketCodeSchema).max(MAX_FANOUT).optional(),
     /** 各站点的商品编号。ASIN 分站点，所以按市场分别给。 */
     asinByMarket: z.record(z.string(), z.string().trim().min(5).max(20)).optional(),
+    /**
+     * 关键词自动解析真实在售商品。
+     * 给了这个就不需要 asinByMarket——每个市场抓一次搜索页，取真实商品与价格。
+     */
+    keyword: z.string().trim().min(1).max(80).optional(),
+    /** 每个市场取多少个真实商品作为价格样本 */
+    sampleSize: z.number().int().min(3).max(20).default(10),
   })
-  .refine((v) => (v.quotes?.length ?? 0) > 0 || (v.markets?.length ?? 0) > 0, {
-    message: "至少提供 quotes（手工售价）或 markets（自动抓取）之一",
-  });
+  .refine(
+    (v) => (v.quotes?.length ?? 0) > 0 || (v.markets?.length ?? 0) > 0,
+    { message: "至少提供 quotes（手工售价）或 markets（自动抓取）之一" },
+  );
 
 export const POST = route(async (request: Request) => {
   const parsed = await parseJson(request, bodySchema);
   if (!parsed.ok) return parsed.response;
-  const { probe, quotes, markets, asinByMarket, method } = parsed.data;
+  const { probe, quotes, markets, asinByMarket, method, keyword, sampleSize } = parsed.data;
 
   const catalog = await loadCatalog();
   const collected: MarketQuote[] = [];
@@ -73,10 +82,57 @@ export const POST = route(async (request: Request) => {
     });
   }
 
-  // 2) 自动抓取
-  if (markets?.length) {
+  // 2a) 关键词自动解析真实在售商品：每个市场抓一次搜索页
+  const resolvedByMarket: Record<string, RealListing[]> = {};
+  const statsByMarket: Record<string, PriceStats> = {};
+  if (markets?.length && keyword) {
+    const results = await Promise.allSettled(
+      markets.map(async (m) => ({ market: m, r: await resolveMarketListings(m, keyword, sampleSize) })),
+    );
+    for (const [i, res] of results.entries()) {
+      const m = markets[i];
+      if (res.status !== "fulfilled") {
+        const e = res.reason;
+        failures.push({
+          marketCode: m,
+          reason: e instanceof ScrapeRejected ? e.reason : e instanceof Error ? e.message : "解析失败",
+        });
+        continue;
+      }
+      const listings = res.value.r.value;
+      const stats = priceStats(listings);
+      if (!stats) {
+        failures.push({ marketCode: m, reason: "未解析出有效价格" });
+        continue;
+      }
+      const median = stats.median;
+      resolvedByMarket[m] = listings;
+      statsByMarket[m] = stats;
+      // 取中位数作为该市场的代表价：搜索结果里混着配件与高端品，均值会被离群值拉偏。
+      // 注意这不是「同一个商品的跨国比价」——各站搜索结果本就是不同商品，
+      // 这里比的是该品类在各市场的价格水位。
+      const representative = listings.reduce((best, l) =>
+        Math.abs(l.price - median) < Math.abs(best.price - median) ? l : best,
+      );
+      collected.push({
+        marketCode: m,
+        platform: "Amazon",
+        sellPrice: median,
+        title: representative.title,
+        rating: representative.rating,
+        reviewCount: representative.reviewCount,
+        source: `${res.value.r.source} · ${listings.length} 个样本取中位数`,
+        url: representative.url,
+      });
+    }
+  }
+
+  // 2b) 指定 ASIN 精确抓取
+  if (markets?.length && !keyword) {
     if (!asinByMarket || Object.keys(asinByMarket).length === 0) {
-      return badRequest("自动抓取需要提供 asinByMarket——ASIN 是分站点的，不能用一个 ASIN 查所有国家");
+      return badRequest(
+        "自动抓取需要提供 keyword（关键词解析真实商品）或 asinByMarket——ASIN 是分站点的，不能用一个 ASIN 查所有国家",
+      );
     }
 
     const fc = createFirecrawlProvider();
@@ -147,7 +203,60 @@ export const POST = route(async (request: Request) => {
       source: r.source,
       title: r.title,
       url: r.url,
+      /** 该市场的真实在售商品样本，每条都带可点击的商品页链接 */
+      listings: (resolvedByMarket[r.marketCode] ?? []).map((l) => ({
+        asin: l.asin,
+        title: l.title,
+        price: l.price,
+        rating: l.rating,
+        reviewCount: l.reviewCount,
+        url: l.url,
+      })),
+      /** 样本价格分布。mixed=true 表示样本横跨白牌与品牌，中位数不足以代表可达售价 */
+      priceStats: statsByMarket[r.marketCode]
+        ? {
+            min: statsByMarket[r.marketCode].min,
+            max: statsByMarket[r.marketCode].max,
+            spread: +statsByMarket[r.marketCode].spread.toFixed(1),
+            mixed: statsByMarket[r.marketCode].mixed,
+          }
+        : null,
     })),
+    /**
+     * 跨市场可比性警告。
+     * 各站搜索结果是不同商品，若某市场中位数远高于其它市场，通常是该站搜出了品牌货，
+     * 而非真的存在套利空间——拿白牌成本对标品牌售价会得出完全错误的结论。
+     */
+    comparabilityWarning: (() => {
+      const notes: string[] = [];
+
+      // (1) 市场内跨度过大：单一中位数不足以代表可达售价
+      const mixed = Object.entries(statsByMarket).filter(([, s]) => s.mixed).map(([m]) => m);
+      if (mixed.length > 0) {
+        notes.push(`${mixed.join("、")} 的样本内部价格跨度超过 4 倍，同时混有白牌与品牌商品。`);
+      }
+
+      // (2) 跨市场价格水位背离：折成人民币后比较。
+      // 同一关键词在两站的价格水位差几倍，几乎必然是搜出了不同档位的商品，
+      // 而不是真的存在套利空间——拿白牌成本对标品牌售价会得出完全错误的结论。
+      const normalized = report.rows
+        .filter((r) => statsByMarket[r.marketCode])
+        .map((r) => ({ market: r.marketName, cny: r.sellPriceCny }));
+      if (normalized.length >= 2) {
+        const hi = normalized.reduce((a, b) => (b.cny > a.cny ? b : a));
+        const lo = normalized.reduce((a, b) => (b.cny < a.cny ? b : a));
+        const ratio = lo.cny > 0 ? hi.cny / lo.cny : Infinity;
+        if (ratio >= 2) {
+          notes.push(
+            `${hi.market}（¥${hi.cny.toFixed(0)}）的价格水位是 ${lo.market}（¥${lo.cny.toFixed(0)}）的 ${ratio.toFixed(1)} 倍，` +
+              `两站搜出的多半不是同档位商品。`,
+          );
+        }
+      }
+
+      if (notes.length === 0) return null;
+      return `${notes.join("")}中位数不代表你的货能卖到的价格，请点开下方真实商品，挑与你货源同档位的逐个对标。`;
+    })(),
     // 失败的市场必须回报，不能静默丢弃——用户需要知道哪几个国家没算上
     skipped: [...report.skipped, ...failures],
   });

@@ -26,6 +26,15 @@ type Row = {
   source: string;
   title?: string;
   url?: string;
+  priceStats?: { min: number; max: number; spread: number; mixed: boolean } | null;
+  listings?: {
+    asin: string;
+    title: string;
+    price: number;
+    rating: number | null;
+    reviewCount: number | null;
+    url: string;
+  }[];
 };
 
 type Report = {
@@ -33,6 +42,7 @@ type Report = {
   best: { market: string; netProfitCny: number; grade: string } | null;
   rows: Row[];
   skipped: { marketCode: string; reason: string }[];
+  comparabilityWarning: string | null;
 };
 
 const GRADE_COLOR: Record<string, string> = {
@@ -88,6 +98,9 @@ export function SpreadFinder({
   const [volumeCbm, setVolumeCbm] = useState("0.0004");
   const [hsCode, setHsCode] = useState("8518.30");
   const [quotes, setQuotes] = useState(DEFAULT_QUOTES);
+  /** 自动模式：按关键词抓各站真实在售商品，价格与链接严格对应 */
+  const [auto, setAuto] = useState(false);
+  const [autoKeyword, setAutoKeyword] = useState("wireless earbuds");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -122,18 +135,26 @@ export function SpreadFinder({
     setError("");
     setReport(null);
     try {
-      const body = {
-        probe: {
-          nameZh,
-          sourcePriceCny: Number(sourcePriceCny),
-          weightKg: Number(weightKg),
-          volumeCbm: Number(volumeCbm),
-          hsCode: hsCode.trim(),
-        },
-        quotes: quotes
-          .filter((q) => q.market && Number(q.sellPrice) > 0)
-          .map((q) => ({ market: q.market, sellPrice: Number(q.sellPrice) })),
+      const probeBody = {
+        nameZh,
+        sourcePriceCny: Number(sourcePriceCny),
+        weightKg: Number(weightKg),
+        volumeCbm: Number(volumeCbm),
+        hsCode: hsCode.trim(),
       };
+      const body = auto
+        ? {
+            probe: probeBody,
+            // 关键词解析真实在售商品：每个市场抓一次搜索页
+            keyword: (autoKeyword.trim() || nameZh).trim(),
+            markets: quotes.filter((q) => q.market).map((q) => q.market),
+          }
+        : {
+            probe: probeBody,
+            quotes: quotes
+              .filter((q) => q.market && Number(q.sellPrice) > 0)
+              .map((q) => ({ market: q.market, sellPrice: Number(q.sellPrice) })),
+          };
       const res = await fetch("/api/discover", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -262,12 +283,47 @@ export function SpreadFinder({
           </div>
         ) : null}
 
-        <p className="mt-5 flex items-center gap-2 text-sm font-extrabold text-amber-200">
-          各国在售价
-          <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-normal text-slate-400">
-            自己填最准 · 零外部调用
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-extrabold text-amber-200">各国在售价</span>
+          <div className="flex rounded-lg bg-slate-800 p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setAuto(false)}
+              className={`rounded-md px-2.5 py-1 ${!auto ? "bg-amber-400 font-bold text-slate-900" : "text-slate-300"}`}
+            >
+              手工填价
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuto(true)}
+              className={`rounded-md px-2.5 py-1 ${auto ? "bg-amber-400 font-bold text-slate-900" : "text-slate-300"}`}
+            >
+              自动抓真实商品
+            </button>
+          </div>
+          <span className="text-[11px] text-slate-500">
+            {auto ? "每个市场抓一次搜索页，价格与商品链接严格对应" : "自己填最准 · 零外部调用"}
           </span>
-        </p>
+        </div>
+
+        {auto ? (
+          <div className="mt-3 space-y-2">
+            <label className="block text-xs text-slate-400">
+              搜索关键词（用目标市场的语言，英文站点填英文）
+              <input
+                value={autoKeyword}
+                onChange={(e) => setAutoKeyword(e.target.value)}
+                placeholder="wireless earbuds"
+                className="mt-1"
+              />
+            </label>
+            <p className="rounded-xl border border-slate-700 bg-[#0a1226] p-3 text-[11px] leading-6 text-slate-400">
+              各站搜索结果本就是不同商品，所以这<b className="text-slate-200">不是同一商品的跨国比价</b>，
+              而是该品类在各市场的<b className="text-slate-200">价格水位</b>。
+              每个市场取样本价格的中位数（避开高端品与配件的离群值），下方会列出全部真实商品供你点开核对。
+            </p>
+          </div>
+        ) : null}
         <div className="mt-3 space-y-2">
           {quotes.map((q, i) => (
             <div key={i} className="flex items-center gap-2">
@@ -282,12 +338,18 @@ export function SpreadFinder({
                   </option>
                 ))}
               </select>
-              <input
-                value={q.sellPrice}
-                onChange={(e) => setQuotes(quotes.map((x, j) => (j === i ? { ...x, sellPrice: e.target.value } : x)))}
-                placeholder="当地币种售价，如 19.99"
-                inputMode="decimal"
-              />
+              {auto ? (
+                <span className="flex-1 rounded-xl border border-dashed border-slate-700 px-3 py-2.5 text-xs text-slate-500">
+                  价格将从该站搜索结果自动解析
+                </span>
+              ) : (
+                <input
+                  value={q.sellPrice}
+                  onChange={(e) => setQuotes(quotes.map((x, j) => (j === i ? { ...x, sellPrice: e.target.value } : x)))}
+                  placeholder="当地币种售价，如 19.99"
+                  inputMode="decimal"
+                />
+              )}
               <button
                 type="button"
                 onClick={() => setQuotes(quotes.filter((_, j) => j !== i))}
@@ -344,6 +406,18 @@ export function SpreadFinder({
 
       {report ? (
         <div className="mt-4">
+          {/* 可比性警告必须排在结论之前——先看到「澳洲 S 级」再看到警告就晚了 */}
+          {report.comparabilityWarning ? (
+            <div className="mb-3 flex items-start gap-2 rounded-2xl border border-rose-500/40 bg-rose-400/10 p-4 text-xs leading-6 text-rose-200">
+              <TriangleAlert size={15} className="mt-0.5 shrink-0" />
+              <span>
+                <b>跨市场结果不可直接比较。</b>
+                <br />
+                {report.comparabilityWarning}
+              </span>
+            </div>
+          ) : null}
+
           {report.best ? (
             <div className="rounded-2xl border border-amber-500/30 bg-amber-400/10 p-4 text-sm text-amber-100">
               最优市场 <b>{report.best.market}</b> · 单件净利{" "}
@@ -421,12 +495,54 @@ export function SpreadFinder({
                         target="_blank"
                         rel="noopener noreferrer nofollow"
                         className="mt-1 inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300"
-                        title="本行价格即抓取自该商品页"
+                        title="最接近中位数的那个真实商品"
                       >
-                        打开该商品 <ExternalLink size={10} />
+                        代表商品 <ExternalLink size={10} />
                       </a>
                     ) : null}
                   </div>
+
+                  {/* 真实在售商品样本：每条都是可点开核对的真商品 */}
+                  {r.listings && r.listings.length > 0 ? (
+                    <div className="col-span-12 mt-3 rounded-xl border border-slate-800 bg-[#0a1226] p-3">
+                      <p className="mb-2 text-[11px] font-bold text-slate-400">
+                        {r.marketName} 真实在售商品 {r.listings.length} 件（中位数 {r.currency}{" "}
+                        {r.sellPriceLocal}
+                        {r.priceStats ? (
+                          <>
+                            ，区间 {r.priceStats.min}–{r.priceStats.max}
+                          </>
+                        ) : null}
+                        ）
+                      </p>
+                      {r.priceStats?.mixed ? (
+                        <p className="mb-2 rounded-lg bg-rose-400/10 px-2 py-1 text-[11px] text-rose-200">
+                          价格跨度 {r.priceStats.spread} 倍，样本混有白牌与品牌 —— 中位数不代表你的货能卖到的价，
+                          请在下方挑同档位商品对标
+                        </p>
+                      ) : null}
+                      <div className="space-y-1">
+                        {r.listings.map((l) => (
+                          <a
+                            key={l.asin}
+                            href={l.url}
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            className="flex items-center gap-2 rounded-lg px-2 py-1 text-[11px] transition hover:bg-[#0e1836]"
+                          >
+                            <span className="num w-16 shrink-0 font-bold text-sky-300">
+                              {r.currency} {l.price}
+                            </span>
+                            <span className="w-10 shrink-0 text-slate-500">
+                              {l.rating ? `★${l.rating}` : "—"}
+                            </span>
+                            <span className="flex-1 truncate text-slate-300">{l.title}</span>
+                            <ExternalLink size={10} className="shrink-0 text-slate-500" />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
