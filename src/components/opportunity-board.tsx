@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { ArrowRight, Flame, Package, Search, Ship, TrendingUp, X } from "lucide-react";
+import { LivePrice } from "@/components/live-price";
 import { PlatformLinks } from "@/components/platform-links";
 import { sellingLinks, sourcingLinks } from "@/lib/marketplace-urls";
 import { gradeOf } from "@/lib/profit";
@@ -469,7 +470,17 @@ function DetailDrawer({
           。这是模型推算，不含备货资金占用与滞销风险。
         </div>
 
-        <div className="mt-4 space-y-3 rounded-xl border border-slate-700 bg-[#0e1836] p-3">
+        <div className="mt-4">
+          <LivePrice
+            market={o.marketCode}
+            marketName={o.marketName}
+            keyword={o.nameEn || o.nameZh}
+            baselineLocal={o.sellPriceLocal}
+            currency={o.currency}
+          />
+        </div>
+
+        <div className="mt-3 space-y-3 rounded-xl border border-slate-700 bg-[#0e1836] p-3">
           <PlatformLinks title="🇨🇳 去采购端核价" links={sourcingLinks(o.nameZh)} />
           <PlatformLinks
             title={`${o.flag} 去 ${o.marketName} 销售端比价`}

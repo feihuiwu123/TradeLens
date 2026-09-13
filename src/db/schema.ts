@@ -73,6 +73,38 @@ export const subcategories = pgTable("subcategories", {
   keywords: text("keywords").notNull().default(""),
 });
 
+/**
+ * 抓取回来的真实在售商品快照。
+ *
+ * 两个作用：
+ * 1. 省配额与时延——同一关键词+市场在 TTL 内重复查询直接走缓存，不再打外部站点。
+ *    实测抓一次搜索页要十几到几十秒，且会撞限流（Firecrawl 500 / amazon.de 503）。
+ * 2. 这张表就是以后做主动采集（方式1）的数据底座，届时不必从零开始。
+ *
+ * 按 (market, keyword, asin) 唯一：同一商品重复抓取只更新价格与时间戳。
+ */
+export const listingSnapshots = pgTable(
+  "listing_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    marketCode: text("market_code").notNull(),
+    /** 归一化后的检索词（小写去空格），用于命中缓存 */
+    keyword: text("keyword").notNull(),
+    asin: text("asin").notNull(),
+    title: text("title").notNull(),
+    /** 当地币种数值 */
+    price: real("price").notNull(),
+    currency: text("currency").notNull(),
+    rating: real("rating"),
+    reviewCount: integer("review_count"),
+    /** 真实商品页链接，与 price 严格对应 */
+    url: text("url").notNull(),
+    source: text("source").notNull(),
+    fetchedAt: timestamp("fetched_at").notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("listing_snapshots_market_keyword_asin").on(table.marketCode, table.keyword, table.asin)],
+);
+
 export const products = pgTable("products", {
   id: serial("id").primaryKey(),
   sku: text("sku").notNull().unique(),
@@ -172,6 +204,8 @@ export type Market = typeof markets.$inferSelect;
 export type Product = typeof products.$inferSelect;
 export type Category = typeof categories.$inferSelect;
 export type Subcategory = typeof subcategories.$inferSelect;
+export type ListingSnapshot = typeof listingSnapshots.$inferSelect;
+export type NewListingSnapshot = typeof listingSnapshots.$inferInsert;
 export type MarketListing = typeof marketListings.$inferSelect;
 export type ShippingRate = typeof shippingRates.$inferSelect;
 export type CustomsTariff = typeof customsTariffs.$inferSelect;

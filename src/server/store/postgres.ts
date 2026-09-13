@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   assistantMessages,
@@ -10,13 +10,22 @@ import {
   platformFees,
   products,
   savedCalcs,
+  listingSnapshots,
   shippingRates,
   subcategories,
   watchlist,
+  type ListingSnapshot,
+  type NewListingSnapshot,
   type WatchItem,
 } from "@/db/schema";
 import { buildSeedCatalog } from "@/server/store/seed-catalog";
-import type { AssistantMessage, Catalog, SavedCalc, TradeStore } from "@/server/store/types";
+import {
+  normalizeKeyword,
+  type AssistantMessage,
+  type Catalog,
+  type SavedCalc,
+  type TradeStore,
+} from "@/server/store/types";
 
 /** 灌种子后需要把 serial 序列推到 max(id)，否则后续插入会撞上已占用的主键。 */
 const SEEDED_TABLES = [
@@ -145,6 +154,48 @@ class PostgresStore implements TradeStore {
     if (messages.length === 0) return;
     await this.ensureSeeded();
     await getDb().insert(assistantMessages).values(messages);
+  }
+
+  async getListingSnapshots(input: {
+    marketCode: string;
+    keyword: string;
+    maxAgeMs: number;
+  }): Promise<ListingSnapshot[]> {
+    await this.ensureSeeded();
+    const cutoff = new Date(Date.now() - input.maxAgeMs);
+    return getDb()
+      .select()
+      .from(listingSnapshots)
+      .where(
+        and(
+          eq(listingSnapshots.marketCode, input.marketCode),
+          eq(listingSnapshots.keyword, normalizeKeyword(input.keyword)),
+          gte(listingSnapshots.fetchedAt, cutoff),
+        ),
+      );
+  }
+
+  async saveListingSnapshots(rows: NewListingSnapshot[]): Promise<void> {
+    if (rows.length === 0) return;
+    await this.ensureSeeded();
+    const now = new Date();
+    await getDb()
+      .insert(listingSnapshots)
+      .values(rows.map((r) => ({ ...r, keyword: normalizeKeyword(r.keyword), fetchedAt: r.fetchedAt ?? now })))
+      // 同一商品重复抓取只刷新价格与时间戳，不产生重复行
+      .onConflictDoUpdate({
+        target: [listingSnapshots.marketCode, listingSnapshots.keyword, listingSnapshots.asin],
+        set: {
+          title: sql`excluded.title`,
+          price: sql`excluded.price`,
+          currency: sql`excluded.currency`,
+          rating: sql`excluded.rating`,
+          reviewCount: sql`excluded.review_count`,
+          url: sql`excluded.url`,
+          source: sql`excluded.source`,
+          fetchedAt: sql`excluded.fetched_at`,
+        },
+      });
   }
 
   async ping(): Promise<boolean> {

@@ -1,6 +1,12 @@
-import type { WatchItem } from "@/db/schema";
+import type { ListingSnapshot, NewListingSnapshot, WatchItem } from "@/db/schema";
 import { buildSeedCatalog } from "@/server/store/seed-catalog";
-import type { AssistantMessage, Catalog, SavedCalc, TradeStore } from "@/server/store/types";
+import {
+  normalizeKeyword,
+  type AssistantMessage,
+  type Catalog,
+  type SavedCalc,
+  type TradeStore,
+} from "@/server/store/types";
 
 /**
  * 进程内存实现：未配置 DATABASE_URL 时使用。
@@ -16,6 +22,7 @@ class MemoryStore implements TradeStore {
   private readonly watches: WatchItem[] = [];
   private readonly calcs: SavedCalc[] = [];
   private readonly messages: (AssistantMessage & { id: number; createdAt: Date })[] = [];
+  private readonly snapshots: ListingSnapshot[] = [];
   private nextId = 1;
 
   async loadCatalog(): Promise<Catalog> {
@@ -58,6 +65,43 @@ class MemoryStore implements TradeStore {
   async appendAssistantMessages(messages: AssistantMessage[]): Promise<void> {
     for (const m of messages) {
       this.messages.push({ ...m, id: this.nextId++, createdAt: new Date() });
+    }
+  }
+
+  async getListingSnapshots(input: {
+    marketCode: string;
+    keyword: string;
+    maxAgeMs: number;
+  }): Promise<ListingSnapshot[]> {
+    const key = normalizeKeyword(input.keyword);
+    const cutoff = Date.now() - input.maxAgeMs;
+    return this.snapshots.filter(
+      (s) => s.marketCode === input.marketCode && s.keyword === key && s.fetchedAt.getTime() >= cutoff,
+    );
+  }
+
+  async saveListingSnapshots(rows: NewListingSnapshot[]): Promise<void> {
+    for (const row of rows) {
+      const key = normalizeKeyword(row.keyword);
+      const i = this.snapshots.findIndex(
+        (s) => s.marketCode === row.marketCode && s.keyword === key && s.asin === row.asin,
+      );
+      const record: ListingSnapshot = {
+        id: i >= 0 ? this.snapshots[i].id : this.nextId++,
+        marketCode: row.marketCode,
+        keyword: key,
+        asin: row.asin,
+        title: row.title,
+        price: row.price,
+        currency: row.currency,
+        rating: row.rating ?? null,
+        reviewCount: row.reviewCount ?? null,
+        url: row.url,
+        source: row.source,
+        fetchedAt: row.fetchedAt ?? new Date(),
+      };
+      if (i >= 0) this.snapshots[i] = record;
+      else this.snapshots.push(record);
     }
   }
 

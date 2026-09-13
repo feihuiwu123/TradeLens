@@ -7,6 +7,8 @@ import type {
   PlatformFee,
   Product,
   ShippingRate,
+  ListingSnapshot,
+  NewListingSnapshot,
   Subcategory,
   WatchItem,
 } from "@/db/schema";
@@ -62,6 +64,24 @@ export type TradeStore = {
 
   appendAssistantMessages(messages: AssistantMessage[]): Promise<void>;
 
+  /**
+   * 读取未过期的商品快照。
+   * 返回空数组表示缓存未命中或已过期，调用方需要重新抓取。
+   */
+  getListingSnapshots(input: {
+    marketCode: string;
+    keyword: string;
+    maxAgeMs: number;
+  }): Promise<ListingSnapshot[]>;
+
+  /** 写入/更新快照。按 (market, keyword, asin) 去重，重复抓取只刷新价格与时间戳。 */
+  saveListingSnapshots(rows: NewListingSnapshot[]): Promise<void>;
+
   /** 连通性自检；内存实现恒为 true */
   ping(): Promise<boolean>;
 };
+
+/** 检索词归一化：大小写与多余空格不应导致缓存未命中 */
+export function normalizeKeyword(keyword: string): string {
+  return keyword.trim().toLowerCase().replace(/\s+/g, " ");
+}

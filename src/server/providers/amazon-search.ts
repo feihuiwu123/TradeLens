@@ -1,6 +1,13 @@
 import { AMAZON_DOMAIN } from "@/lib/marketplace-urls";
 import { ScrapeRejected, createFirecrawlProvider } from "@/server/providers/firecrawl";
 import type { Sourced } from "@/server/providers/types";
+import { getStore } from "@/server/store";
+
+/** 各站点计价币种，写快照时一并落库，避免读缓存时还要回查市场表 */
+const MARKET_CURRENCY: Record<string, string> = {
+  US: "USD", CA: "CAD", UK: "GBP", DE: "EUR", FR: "EUR", JP: "JPY",
+  AU: "AUD", SG: "SGD", AE: "AED", MX: "MXN", BR: "BRL",
+};
 
 /**
  * 从 Amazon 搜索页解析真实在售商品。
@@ -158,7 +165,15 @@ export function priceStats(listings: RealListing[]): PriceStats | null {
   return { median, min, max, count: listings.length, spread, mixed: spread >= 4 };
 }
 
-/** 取某市场某关键词下的真实在售商品 */
+/** 商品价格快照的有效期。电商调价没那么频繁，6 小时足够新，又能挡掉重复查询。 */
+export const LISTING_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * 取某市场某关键词下的真实在售商品，优先走快照缓存。
+ *
+ * 抓一次搜索页实测要十几到几十秒，还会撞限流（Firecrawl 500、amazon.de 503）。
+ * 同一关键词+市场在 TTL 内重复查询直接读库，既省配额又免于被限流。
+ */
 export async function resolveMarketListings(
   market: string,
   keyword: string,
@@ -167,6 +182,30 @@ export async function resolveMarketListings(
 ): Promise<Sourced<RealListing[]>> {
   const domain = AMAZON_DOMAIN[market];
   if (!domain) throw new ScrapeRejected(`${market} 未配置 Amazon 站点域名`);
+
+  const store = getStore();
+  const cached = await store.getListingSnapshots({
+    marketCode: market,
+    keyword,
+    maxAgeMs: LISTING_TTL_MS,
+  });
+  if (cached.length >= Math.min(limit, 3)) {
+    const newest = cached.reduce((a, b) => (b.fetchedAt > a.fetchedAt ? b : a)).fetchedAt;
+    const ageMin = Math.round((Date.now() - newest.getTime()) / 60000);
+    return {
+      value: cached.slice(0, limit).map((s) => ({
+        asin: s.asin,
+        title: s.title,
+        price: s.price,
+        rating: s.rating,
+        reviewCount: s.reviewCount,
+        url: s.url,
+      })),
+      source: `快照缓存 ${domain}「${keyword}」· ${ageMin} 分钟前抓取`,
+      fetchedAt: newest,
+      fallback: false,
+    };
+  }
 
   const fc = createFirecrawlProvider(fetchImpl);
   const url = `https://www.${domain}/s?k=${encodeURIComponent(keyword)}`;
@@ -187,10 +226,30 @@ export async function resolveMarketListings(
     );
   }
 
-  return {
-    value: listings,
-    source: `${fc.name} ${domain} 搜索「${keyword}」`,
-    fetchedAt: new Date(),
-    fallback: false,
-  };
+  const fetchedAt = new Date();
+  const source = `${fc.name} ${domain} 搜索「${keyword}」`;
+
+  // 写快照供后续复用。写失败不应连累本次查询——数据已经拿到了。
+  const currency = MARKET_CURRENCY[market] ?? "";
+  try {
+    await store.saveListingSnapshots(
+      listings.map((l) => ({
+        marketCode: market,
+        keyword,
+        asin: l.asin,
+        title: l.title,
+        price: l.price,
+        currency,
+        rating: l.rating,
+        reviewCount: l.reviewCount,
+        url: l.url,
+        source,
+        fetchedAt,
+      })),
+    );
+  } catch (error) {
+    console.warn("[TradeLens] 商品快照写入失败，本次结果仍可用:", error instanceof Error ? error.message : error);
+  }
+
+  return { value: listings, source, fetchedAt, fallback: false };
 }
