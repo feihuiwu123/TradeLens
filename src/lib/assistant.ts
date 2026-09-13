@@ -1,4 +1,5 @@
 import { buildOpportunities, loadCatalog, type Catalog } from "@/lib/catalog";
+import { compareLive, formatLiveComparison } from "@/lib/assistant-live";
 import { money, pct } from "@/lib/format";
 import { calculateProfit } from "@/lib/profit";
 import type { Opportunity } from "@/lib/types";
@@ -139,7 +140,11 @@ function replyForOpps(title: string, opps: Opportunity[]) {
   return `${title}\n\n${topN(opps, 6).map(formatOpp).join("\n\n")}\n\n判定标准：利润率 ≥25% 且单件净利 ≥$3 为可做；12–25% 为薄利测款。以上已计入采购、运费、保险、关税、不可抵扣增值税、平台佣金、履约、广告与退货。`;
 }
 
-export async function answerAssistant(question: string, catalog: Catalog) {
+export async function answerAssistant(
+  question: string,
+  catalog: Catalog,
+  opts: { live?: boolean } = {},
+) {
   const q = question.trim();
   const lower = q.toLowerCase();
   const opps = buildOpportunities(catalog);
@@ -204,6 +209,21 @@ export async function answerAssistant(question: string, catalog: Catalog) {
     const related = opps.filter((o) => o.productId === productHit.id);
     const profile = `产品档案：${productHit.nameZh}（${productHit.sku}）\n货源 ${productHit.supplierPlatform} ¥${productHit.sourcePriceCny}，MOQ ${productHit.moq}，${productHit.weightKg} kg，HS ${productHit.hsCode}，认证 ${productHit.certifications}，IP 风险 ${productHit.ipRisk}。\n${productHit.description}`;
 
+    /*
+     * 实盘核验只在这里触发——助手已经确定用户在问某个具体商品。
+     * 通用问句（关税怎么算、做什么品赚钱）不抓，否则每句话都要等十几秒。
+     * 抓取失败不影响回答，只是少了核验段落。
+     */
+    let live = "";
+    if (opts.live) {
+      try {
+        live = formatLiveComparison(await compareLive(catalog, productHit, related), productHit.nameZh);
+      } catch (error) {
+        console.warn("[TradeLens] 助手实盘核验失败:", error instanceof Error ? error.message : error);
+        live = "\n\n【实盘核验】本次未能取到在售价，以上数字仍是模型基准值。";
+      }
+    }
+
     // 「耳机卖美国怎么样」这类问法同时指定了品和国：先正面回答问到的那个市场，
     // 再附上其它市场做横向对比，并点出纯利最高的主攻国。
     if (marketHit) {
@@ -219,10 +239,10 @@ export async function answerAssistant(question: string, catalog: Catalog) {
           : best
             ? `\n\n主攻建议：${marketHit.nameZh}就是这款目前纯利最高的市场。`
             : "";
-      return `${profile}\n\n${verdict}${advice}\n\n${replyForOpps("其它市场横向对比：", others)}`;
+      return `${profile}\n\n${verdict}${advice}\n\n${replyForOpps("其它市场横向对比：", others)}${live}`;
     }
 
-    return `${profile}\n\n${replyForOpps("该货源在各市场的全成本结果：", related)}`;
+    return `${profile}\n\n${replyForOpps("该货源在各市场的全成本结果：", related)}${live}`;
   }
 
   if (marketHit) {
@@ -253,9 +273,20 @@ export async function answerAssistant(question: string, catalog: Catalog) {
   return `我是贸差眼助手，专门算「中国货源 × 海外需求 × 全成本利润」。\n\n你可以问：现在做什么品最赚钱、美国关税怎么算、瑜伽垫该海运还是快递、如何把接口给 Hermes。\n\n当前引擎里的三条高分机会：\n${go.map(formatOpp).join("\n\n")}`;
 }
 
-export async function runAssistant(question: string) {
+export async function runAssistant(question: string, opts: { live?: boolean } = {}) {
   const catalog = await loadCatalog();
-  return answerAssistant(question, catalog);
+  return answerAssistant(question, catalog, opts);
+}
+
+/**
+ * 该问题是否值得触发实盘核验。
+ *
+ * 只有问到具体商品时才抓——通用问句（关税怎么算、做什么品赚钱、接口怎么给 Hermes）
+ * 走不到商品分支，抓了也用不上，白白让用户等十几秒。
+ */
+export async function shouldGoLive(question: string): Promise<boolean> {
+  const catalog = await loadCatalog();
+  return Boolean(matchProduct(question.trim(), catalog.products));
 }
 
 export { calculateProfit, EXISTING_TOOLS };
