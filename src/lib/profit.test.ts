@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  breakevenPriceLocal,
   calculateProfit,
   chargeableWeightKg,
   freightPerUnitUsd,
@@ -208,5 +209,58 @@ describe("默认物流选择", () => {
 
   it("重货大件走海运", () => {
     expect(pickDefaultMethod(15, 0.08)).toBe("sea_lcl");
+  });
+});
+
+describe("保本售价逆推", () => {
+  const base: CalcInput = {
+    sourcePriceCny: 28.5, quantity: 50, weightKg: 0.085, volumeCbm: 0.0004,
+    sellPriceLocal: 19.99, sellCurrency: "USD", cnyPerSellCurrency: 6.7, cnyPerUsd: 6.7,
+    shippingMethod: "express", ratePerKgUsd: 8, ratePerCbmUsd: 200, minChargeUsd: 10,
+    dutyRate: 0.2, vatRate: 0, vatRecoverable: false,
+    platformReferralRate: 0.15, fulfillmentPerUnitUsd: 3.45, paymentFeeRate: 0,
+    adsRate: 0.08, returnRate: 0.05, insuranceRate: 0.003,
+    packingPerUnitUsd: 0.18, inspectionPerOrderUsd: 40,
+  };
+
+  it("按保本价定价时净利恰好为 0", () => {
+    // 这是保本价的定义，也是最能验证公式正确性的检查
+    const be = breakevenPriceLocal(base);
+    const r = calculateProfit({ ...base, sellPriceLocal: be });
+    expect(r.netProfitUsd).toBeCloseTo(0, 6);
+  });
+
+  it("略高于保本价即为正利润，略低即亏损", () => {
+    const be = breakevenPriceLocal(base);
+    expect(calculateProfit({ ...base, sellPriceLocal: be * 1.01 }).netProfitUsd).toBeGreaterThan(0);
+    expect(calculateProfit({ ...base, sellPriceLocal: be * 0.99 }).netProfitUsd).toBeLessThan(0);
+  });
+
+  it("关税越高保本价越高", () => {
+    const low = breakevenPriceLocal({ ...base, dutyRate: 0 });
+    const high = breakevenPriceLocal({ ...base, dutyRate: 0.2 });
+    expect(high).toBeGreaterThan(low);
+  });
+
+  it("广告与佣金越高保本价越高", () => {
+    expect(breakevenPriceLocal({ ...base, adsRate: 0.3 })).toBeGreaterThan(breakevenPriceLocal(base));
+    expect(breakevenPriceLocal({ ...base, platformReferralRate: 0.3 })).toBeGreaterThan(breakevenPriceLocal(base));
+  });
+
+  it("可抵扣增值税不计入保本成本", () => {
+    const withVat = { ...base, vatRate: 0.2 };
+    expect(breakevenPriceLocal({ ...withVat, vatRecoverable: true })).toBeLessThan(
+      breakevenPriceLocal({ ...withVat, vatRecoverable: false }),
+    );
+  });
+
+  it("费率合计吃掉全部售价时返回 Infinity，而不是负数或 NaN", () => {
+    // r >= 1 时无论定价多高都亏，不能返回一个看似可行的数字
+    const doomed = breakevenPriceLocal({ ...base, platformReferralRate: 0.6, adsRate: 0.5 });
+    expect(doomed).toBe(Infinity);
+  });
+
+  it("汇率为 0 时返回 Infinity 而不是除零", () => {
+    expect(breakevenPriceLocal({ ...base, cnyPerSellCurrency: 0 })).toBe(Infinity);
   });
 });

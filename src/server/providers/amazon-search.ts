@@ -94,6 +94,40 @@ export function medianPrice(listings: RealListing[]): number | null {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+export type TierFilterResult = {
+  kept: RealListing[];
+  excluded: { listing: RealListing; reason: "below" | "above" }[];
+  /** 实际使用的当地币种区间 */
+  band: { min: number; max: number };
+};
+
+/**
+ * 按价格档位筛选同档位商品。
+ *
+ * 解决的问题：搜索「wireless earbuds」在澳洲站返回的是 Anker / Samsung 品牌货，
+ * 拿它们的售价去对标 ¥28.5 的白牌成本，会算出「净利率 58%」这种不可能实现的结论。
+ * 白牌货卖不出品牌价，必须先把不同档位的商品剔掉再取中位数。
+ *
+ * 下界用保本售价（低于它无论如何都亏，不可能是你的目标售价）；
+ * 上界用货源成本的倍数（超出即判定为另一个产品档位）。
+ * 两个边界都由调用方按实际经济含义算好传入，本函数只负责筛。
+ */
+export function filterToTier(
+  listings: RealListing[],
+  band: { min: number; max: number },
+): TierFilterResult {
+  const kept: RealListing[] = [];
+  const excluded: TierFilterResult["excluded"] = [];
+
+  for (const l of listings) {
+    if (l.price < band.min) excluded.push({ listing: l, reason: "below" });
+    else if (l.price > band.max) excluded.push({ listing: l, reason: "above" });
+    else kept.push(l);
+  }
+
+  return { kept, excluded, band };
+}
+
 export type PriceStats = {
   median: number;
   min: number;

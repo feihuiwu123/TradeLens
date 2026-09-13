@@ -166,6 +166,45 @@ export function methodLabel(method: ShippingMethod) {
   }
 }
 
+/**
+ * 保本售价逆推（PRD 5.4）。
+ *
+ * 与售价成正比的费率合计 r = 佣金 + 支付 + 广告 + 退货损耗；
+ * 与售价无关的硬性成本 Fixed = 货源 + 运费 + 保险 + 包装 + 验货 + 关税 + 不可抵扣增值税 + 履约。
+ * 则 Breakeven = Fixed / (1 - r)，再按汇率折回当地币种。
+ *
+ * 注意 VAT 的处理：关税与增值税的计税基是 CIF，与售价无关，所以归入 Fixed。
+ * 若 r >= 1（费率合计吃掉全部售价），无论定多高都亏，返回 Infinity。
+ */
+export function breakevenPriceLocal(input: CalcInput): number {
+  const qty = Math.max(1, Math.round(input.quantity));
+  const goodsUsd = usdFromCny(input.sourcePriceCny, input.cnyPerUsd);
+  const freightUsd = freightPerUnitUsd({ ...input, quantity: qty });
+  const insuranceUsd = goodsUsd * input.insuranceRate;
+  const cifUsd = goodsUsd + freightUsd + insuranceUsd;
+  const dutyUsd = cifUsd * input.dutyRate;
+  const vatUsd = input.vatRecoverable ? 0 : (cifUsd + dutyUsd) * input.vatRate;
+
+  const fixedUsd =
+    goodsUsd +
+    freightUsd +
+    insuranceUsd +
+    input.packingPerUnitUsd +
+    input.inspectionPerOrderUsd / qty +
+    dutyUsd +
+    vatUsd +
+    input.fulfillmentPerUnitUsd;
+
+  // 退货损耗按实际损失比例计入，与 calculateProfit 中的 0.55 系数保持一致
+  const r =
+    input.platformReferralRate + input.paymentFeeRate + input.adsRate + input.returnRate * 0.55;
+  if (r >= 1) return Infinity;
+
+  const breakevenUsd = fixedUsd / (1 - r);
+  if (input.cnyPerSellCurrency <= 0) return Infinity;
+  return (breakevenUsd * input.cnyPerUsd) / input.cnyPerSellCurrency;
+}
+
 export type Grade = { grade: "S" | "A" | "B" | "C"; label: string; color: string };
 
 /**

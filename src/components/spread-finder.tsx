@@ -27,6 +27,7 @@ type Row = {
   title?: string;
   url?: string;
   priceStats?: { min: number; max: number; spread: number; mixed: boolean } | null;
+  tier?: { band: { min: number; max: number }; excludedAbove: number; excludedBelow: number; applied: boolean } | null;
   listings?: {
     asin: string;
     title: string;
@@ -101,6 +102,8 @@ export function SpreadFinder({
   /** 自动模式：按关键词抓各站真实在售商品，价格与链接严格对应 */
   const [auto, setAuto] = useState(false);
   const [autoKeyword, setAutoKeyword] = useState("wireless earbuds");
+  const [tierFilter, setTierFilter] = useState(true);
+  const [maxTierMultiple, setMaxTierMultiple] = useState("12");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -147,6 +150,8 @@ export function SpreadFinder({
             probe: probeBody,
             // 关键词解析真实在售商品：每个市场抓一次搜索页
             keyword: (autoKeyword.trim() || nameZh).trim(),
+            tierFilter,
+            maxTierMultiple: Number(maxTierMultiple) || 12,
             markets: quotes.filter((q) => q.market).map((q) => q.market),
           }
         : {
@@ -317,10 +322,35 @@ export function SpreadFinder({
                 className="mt-1"
               />
             </label>
+            <label className="flex items-start gap-2 rounded-xl border border-slate-700 bg-[#0a1226] p-3 text-[11px] leading-6 text-slate-400">
+              <input
+                type="checkbox"
+                checked={tierFilter}
+                onChange={(e) => setTierFilter(e.target.checked)}
+                className="mt-1 !w-auto"
+              />
+              <span>
+                <b className="text-slate-200">只保留同档位商品</b>（建议开启）。
+                搜索结果常混入品牌货——拿 ¥{sourcePriceCny || "…"} 的白牌成本去对标 Anker 的售价，
+                会算出你根本实现不了的利润率。开启后只保留
+                <b className="text-slate-200">保本价</b>到<b className="text-slate-200">货源成本 {maxTierMultiple} 倍</b>
+                区间内的商品；若某市场同档位样本不足 3 件，该市场会被整体排除而不是给你一个失真的数字。
+              </span>
+            </label>
+            {tierFilter ? (
+              <label className="block text-xs text-slate-400">
+                档位上界：售价超过货源成本的多少倍即判为另一档位
+                <input
+                  value={maxTierMultiple}
+                  onChange={(e) => setMaxTierMultiple(e.target.value)}
+                  inputMode="decimal"
+                  className="mt-1"
+                />
+              </label>
+            ) : null}
             <p className="rounded-xl border border-slate-700 bg-[#0a1226] p-3 text-[11px] leading-6 text-slate-400">
               各站搜索结果本就是不同商品，所以这<b className="text-slate-200">不是同一商品的跨国比价</b>，
-              而是该品类在各市场的<b className="text-slate-200">价格水位</b>。
-              每个市场取样本价格的中位数（避开高端品与配件的离群值），下方会列出全部真实商品供你点开核对。
+              而是该品类在各市场的<b className="text-slate-200">价格水位</b>。下方会列出全部真实商品供你点开核对。
             </p>
           </div>
         ) : null}
@@ -515,6 +545,14 @@ export function SpreadFinder({
                         ) : null}
                         ）
                       </p>
+                      {r.tier?.applied && r.tier.excludedAbove + r.tier.excludedBelow > 0 ? (
+                        <p className="mb-2 rounded-lg bg-sky-400/10 px-2 py-1 text-[11px] leading-5 text-sky-200">
+                          已按同档位筛选：保留 {r.currency} {r.tier.band.min}–{r.tier.band.max} 区间
+                          （下界为按运费关税平台费算出的保本价）
+                          {r.tier.excludedAbove > 0 ? `，剔除 ${r.tier.excludedAbove} 件更高档位的品牌货` : ""}
+                          {r.tier.excludedBelow > 0 ? `，剔除 ${r.tier.excludedBelow} 件低于保本价的商品` : ""}
+                        </p>
+                      ) : null}
                       {r.priceStats?.mixed ? (
                         <p className="mb-2 rounded-lg bg-rose-400/10 px-2 py-1 text-[11px] text-rose-200">
                           价格跨度 {r.priceStats.spread} 倍，样本混有白牌与品牌 —— 中位数不代表你的货能卖到的价，

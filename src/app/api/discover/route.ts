@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { loadCatalog } from "@/lib/catalog";
+import { buildCalcInput, cnyPerUsd, findFee, findShipping, findTariff, fxMap, loadCatalog } from "@/lib/catalog";
+import { breakevenPriceLocal, pickDefaultMethod } from "@/lib/profit";
 import { AMAZON_HOSTS, discoverSpread, type MarketQuote } from "@/lib/spread";
 import { badRequest, marketCodeSchema, parseJson, route, shippingMethodSchema } from "@/server/http";
-import { priceStats, resolveMarketListings, type PriceStats, type RealListing } from "@/server/providers/amazon-search";
+import { filterToTier, priceStats, resolveMarketListings, type PriceStats, type RealListing } from "@/server/providers/amazon-search";
 import { ScrapeRejected, createFirecrawlProvider } from "@/server/providers/firecrawl";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,63 @@ export const maxDuration = 300;
  * 就是 12+ 次抓取，不设上限一样会把配额烧光。
  */
 const MAX_FANOUT = 6;
+/** 同档位样本少于此数即判定该市场无可信价格证据 */
+const MIN_TIER_SAMPLES = 3;
+
+const market = (catalog: Awaited<ReturnType<typeof loadCatalog>>, code: string) =>
+  catalog.markets.find((m) => m.code === code);
+
+type TierNote = {
+  band: { min: number; max: number };
+  excludedAbove: number;
+  excludedBelow: number;
+  /** 恒为 true：样本不足时该市场会被整体排除，不会带着未过滤的中位数进入结果 */
+  applied: boolean;
+};
+
+/**
+ * 计算某市场的同档位价格区间（当地币种）。
+ *
+ * 下界 = 保本售价，用真实的运费/关税/平台费算出来，而不是拍一个倍数——
+ * 低于保本价的商品不可能是你的目标售价。
+ * 上界 = 货源成本 × 倍数，超出即判定为另一个产品档位。
+ */
+function tierBandFor(
+  marketCode: string,
+  probe: { sourcePriceCny: number; weightKg: number; volumeCbm: number; hsCode: string; moq?: number },
+  catalog: Awaited<ReturnType<typeof loadCatalog>>,
+  maxMultiple: number,
+): { min: number; max: number } | null {
+  const market = catalog.markets.find((m) => m.code === marketCode);
+  if (!market) return null;
+  const method = pickDefaultMethod(probe.weightKg, probe.volumeCbm);
+  const shipping = findShipping(catalog.shipping, market.id, method);
+  if (!shipping) return null;
+
+  const input = buildCalcInput({
+    product: {
+      id: 0, sku: "PROBE", nameZh: "", nameEn: "", categoryId: 0,
+      hsCode: probe.hsCode, weightKg: probe.weightKg, volumeCbm: probe.volumeCbm,
+      sourcePriceCny: probe.sourcePriceCny, moq: probe.moq ?? 50,
+      supplierName: "", supplierPlatform: "1688", leadDays: 7, demandScore: 0,
+      trend: "stable", imageUrl: "", description: "", certifications: "", ipRisk: "low",
+    },
+    market,
+    // 售价在保本推导里不参与，给 1 占位
+    listing: { id: 0, productId: 0, marketId: market.id, platform: "Amazon", sellPrice: 1, monthlySales: 0, reviewCount: 0, rating: 0, competition: 50, bsr: 0 },
+    shipping,
+    tariff: findTariff(catalog.tariffs, probe.hsCode, market.id),
+    fee: findFee(catalog.fees, "Amazon", market.id),
+    fx: catalog.fx,
+  });
+
+  const min = breakevenPriceLocal(input);
+  if (!Number.isFinite(min) || min <= 0) return null;
+
+  const cnyLocal = fxMap(catalog.fx).get(market.currency) ?? cnyPerUsd(catalog.fx);
+  const max = (probe.sourcePriceCny * maxMultiple) / cnyLocal;
+  return max > min ? { min, max } : null;
+}
 
 const probeSchema = z.object({
   nameZh: z.string().trim().min(1).max(120),
@@ -56,6 +114,13 @@ const bodySchema = z
     keyword: z.string().trim().min(1).max(80).optional(),
     /** 每个市场取多少个真实商品作为价格样本 */
     sampleSize: z.number().int().min(3).max(20).default(10),
+    /**
+     * 只保留同档位商品。
+     * 关掉后中位数会被品牌货拉高，得出白牌卖不到的售价。
+     */
+    tierFilter: z.boolean().default(true),
+    /** 档位上界：售价超过货源成本的多少倍即判为另一档位 */
+    maxTierMultiple: z.number().min(2).max(60).default(12),
   })
   .refine(
     (v) => (v.quotes?.length ?? 0) > 0 || (v.markets?.length ?? 0) > 0,
@@ -65,7 +130,7 @@ const bodySchema = z
 export const POST = route(async (request: Request) => {
   const parsed = await parseJson(request, bodySchema);
   if (!parsed.ok) return parsed.response;
-  const { probe, quotes, markets, asinByMarket, method, keyword, sampleSize } = parsed.data;
+  const { probe, quotes, markets, asinByMarket, method, keyword, sampleSize, tierFilter, maxTierMultiple } = parsed.data;
 
   const catalog = await loadCatalog();
   const collected: MarketQuote[] = [];
@@ -85,6 +150,7 @@ export const POST = route(async (request: Request) => {
   // 2a) 关键词自动解析真实在售商品：每个市场抓一次搜索页
   const resolvedByMarket: Record<string, RealListing[]> = {};
   const statsByMarket: Record<string, PriceStats> = {};
+  const tierByMarket: Record<string, TierNote> = {};
   if (markets?.length && keyword) {
     const results = await Promise.allSettled(
       markets.map(async (m) => ({ market: m, r: await resolveMarketListings(m, keyword, sampleSize) })),
@@ -99,7 +165,43 @@ export const POST = route(async (request: Request) => {
         });
         continue;
       }
-      const listings = res.value.r.value;
+      const raw = res.value.r.value;
+
+      // 先剔掉不同档位的商品再取中位数。
+      // 下界取保本售价：低于它无论如何都亏，不可能是目标售价；
+      // 上界取货源成本的倍数：超出即另一个产品档位（品牌货）。
+      let listings = raw;
+      let tierNote: TierNote | null = null;
+      if (tierFilter) {
+        const band = tierBandFor(m, probe, catalog, maxTierMultiple);
+        if (band) {
+          const f = filterToTier(raw, band);
+          if (f.kept.length < MIN_TIER_SAMPLES) {
+            // 关键：不能退回未过滤的中位数。
+            // 澳洲站实测就是这种情况——搜索结果几乎全是 Anker/Samsung 品牌货，
+            // 同档位只剩 2 件。退回未过滤结果会重新得出「净利率 58%」这个
+            // 拿白牌成本对标品牌售价的错误结论，正是本过滤要防的事。
+            // 宁可少一个市场，也不给一个已知有误导性的数字。
+            failures.push({
+              marketCode: m,
+              reason:
+                `同档位样本不足：${sampleSize} 件中仅 ${f.kept.length} 件落在保本价 ` +
+                `${band.min.toFixed(2)}~上限 ${band.max.toFixed(2)}（${market(catalog, m)?.currency ?? ""}）区间内，` +
+                `其余多为其它价格档位的商品。已排除该市场以免用品牌货售价误导；` +
+                `可调大 sampleSize 或放宽 maxTierMultiple 重试。`,
+            });
+            continue;
+          }
+          listings = f.kept;
+          tierNote = {
+            band: { min: +band.min.toFixed(2), max: +band.max.toFixed(2) },
+            excludedAbove: f.excluded.filter((e) => e.reason === "above").length,
+            excludedBelow: f.excluded.filter((e) => e.reason === "below").length,
+            applied: true,
+          };
+        }
+      }
+
       const stats = priceStats(listings);
       if (!stats) {
         failures.push({ marketCode: m, reason: "未解析出有效价格" });
@@ -108,6 +210,7 @@ export const POST = route(async (request: Request) => {
       const median = stats.median;
       resolvedByMarket[m] = listings;
       statsByMarket[m] = stats;
+      if (tierNote) tierByMarket[m] = tierNote;
       // 取中位数作为该市场的代表价：搜索结果里混着配件与高端品，均值会被离群值拉偏。
       // 注意这不是「同一个商品的跨国比价」——各站搜索结果本就是不同商品，
       // 这里比的是该品类在各市场的价格水位。
@@ -212,6 +315,8 @@ export const POST = route(async (request: Request) => {
         reviewCount: l.reviewCount,
         url: l.url,
       })),
+      /** 同档位过滤结果：区间、剔除数量，以及是否因样本不足而未生效 */
+      tier: tierByMarket[r.marketCode] ?? null,
       /** 样本价格分布。mixed=true 表示样本横跨白牌与品牌，中位数不足以代表可达售价 */
       priceStats: statsByMarket[r.marketCode]
         ? {

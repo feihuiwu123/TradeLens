@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { medianPrice, parseSearchMarkdown, priceStats, type RealListing } from "@/server/providers/amazon-search";
+import { filterToTier, medianPrice, parseSearchMarkdown, priceStats, type RealListing } from "@/server/providers/amazon-search";
 
 /** 按实测的 Amazon 搜索页 markdown 结构构造，含重复 ASIN 与不完整卡片 */
 const MD = `
@@ -148,5 +148,39 @@ describe("样本离散度", () => {
 
   it("空样本返回 null", () => {
     expect(priceStats([])).toBeNull();
+  });
+});
+
+describe("同档位过滤", () => {
+  const mk = (prices: number[]): RealListing[] =>
+    prices.map((p, i) => ({ asin: `A${i}`, title: `t${i}`, price: p, rating: null, reviewCount: null, url: "u" }));
+
+  it("剔除高于上限的品牌货", () => {
+    // 澳洲站实测：搜索结果混入 Anker AUD 124、Samsung AUD 94 等品牌货
+    const f = filterToTier(mk([23, 49.66, 63.21, 94.11, 124.44]), { min: 18.14, max: 71.08 });
+    expect(f.kept.map((l) => l.price)).toEqual([23, 49.66, 63.21]);
+    expect(f.excluded.filter((e) => e.reason === "above")).toHaveLength(2);
+  });
+
+  it("剔除低于保本价的商品", () => {
+    // 低于保本价的商品不可能是你的目标售价
+    const f = filterToTier(mk([9.99, 13.5, 19.99, 23.98]), { min: 14.15, max: 50.98 });
+    expect(f.kept.map((l) => l.price)).toEqual([19.99, 23.98]);
+    expect(f.excluded.filter((e) => e.reason === "below")).toHaveLength(2);
+  });
+
+  it("边界值包含在区间内", () => {
+    const f = filterToTier(mk([10, 50]), { min: 10, max: 50 });
+    expect(f.kept).toHaveLength(2);
+  });
+
+  it("全部落在区间外时 kept 为空，由调用方决定排除该市场", () => {
+    const f = filterToTier(mk([200, 300]), { min: 10, max: 50 });
+    expect(f.kept).toHaveLength(0);
+    expect(f.excluded).toHaveLength(2);
+  });
+
+  it("回传所用区间供 UI 展示", () => {
+    expect(filterToTier(mk([20]), { min: 10, max: 50 }).band).toEqual({ min: 10, max: 50 });
   });
 });
